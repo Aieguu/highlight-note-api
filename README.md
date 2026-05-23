@@ -31,37 +31,79 @@
 
 ## 部署到 Vercel
 
-### 1. 克隆项目
+### 方式一：Vercel CLI（本地部署）
 
-```bash
-git clone https://github.com/Aieguu/highlight-note-api.git
-cd highlight-note-api
-```
+适合本地测试和调试。
 
-### 2. 安装依赖
-
-```bash
-npm install
-```
-
-### 3. 部署
+#### 1. 安装 Vercel CLI
 
 ```bash
 npm i -g vercel
+```
+
+#### 2. 登录 Vercel
+
+```bash
 vercel login
+```
+
+#### 3. 部署到生产环境
+
+```bash
 vercel --prod
 ```
 
-### 4. 配置环境变量
+#### 4. 配置环境变量
 
-在 Vercel 控制台的 Settings → Environment Variables 中添加：
+```bash
+# 添加环境变量
+vercel env add GITHUB_TOKEN
+vercel env add GITHUB_REPO
+```
+
+或在 Vercel 控制台的 Settings → Environment Variables 中手动添加。
+
+---
+
+### 方式二：GitHub 集成（推荐）
+
+代码推送到 GitHub 后自动部署，无需本地安装任何工具。
+
+#### 1. 推送代码到 GitHub
+
+```bash
+# 在项目目录下执行
+git remote add origin https://github.com/你的用户名/highlight-note-api.git
+git push -u origin main
+```
+
+#### 2. 在 Vercel 导入仓库
+
+1. 访问 [Vercel](https://vercel.com) 并登录
+2. 点击 **"Add New..." → "Project"**
+3. 选择你刚才推送的 GitHub 仓库
+4. 点击 **"Import"**
+
+#### 3. 配置环境变量
+
+在导入页面或项目 Settings → Environment Variables 中添加：
 
 | 变量名 | 说明 | 示例值 |
 |--------|------|--------|
 | `GITHUB_TOKEN` | GitHub Fine-grained Personal Access Token | `ghp_xxxxxxxxxxxx` |
 | `GITHUB_REPO` | 仓库名称 | `Aieguu/blog` |
 
-#### 创建 GitHub Token
+#### 4. 完成部署
+
+点击 **"Deploy"**，等待部署完成。
+
+**后续更新**：只需 `git push`，Vercel 会自动重新部署。
+
+---
+
+### 创建 GitHub Token
+
+两种部署方式都需要配置 GitHub Token：
 
 1. 访问 [GitHub Settings → Personal access tokens → Fine-grained tokens](https://github.com/settings/personal-access-tokens/new)
 2. 配置：
@@ -87,19 +129,33 @@ vercel --prod
 
 ## 本地开发
 
-1. 复制环境变量示例文件：
+1. 安装依赖：
+   ```bash
+   npm install
+   ```
+
+2. 安装 Vercel CLI（如未安装）：
+   ```bash
+   npm i -g vercel
+   ```
+
+3. 复制环境变量示例文件：
    ```bash
    cp .env.example .env
    ```
 
-2. 编辑 `.env` 文件，填入你的配置
+4. 编辑 `.env` 文件，填入你的配置：
+   ```
+   GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+   GITHUB_REPO=Aieguu/blog
+   ```
 
-3. 启动本地开发服务器：
+5. 启动本地开发服务器：
    ```bash
    vercel dev
    ```
 
-4. 访问 `http://localhost:3000/api/notes` 测试 API
+6. 访问 `http://localhost:3000/api/notes` 测试 API
 
 ## 项目结构
 
