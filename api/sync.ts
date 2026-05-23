@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getPendingNotes, removeNotesFromRedis, clearPendingSync, type NoteData } from '../lib/redis';
-import { createFile, updateFile, deleteFile, findArticleBySlug } from '../lib/github';
-import { generateNoteMarkdown, insertShortcode, removeShortcode, escapeQuotes, setCorsHeaders } from '../lib/utils';
+import { batchCommit, findArticleBySlug, type FileOperation } from '../lib/github';
+import { generateNoteMarkdown, insertShortcode, removeShortcode, setCorsHeaders } from '../lib/utils';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCorsHeaders(res);
@@ -10,12 +10,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).end();
   }
 
-  // 只允许 POST 请求
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, error: 'Method not allowed' });
   }
 
-  // 验证请求来源
   const authHeader = req.headers.authorization;
   const isCronRequest = authHeader === `Bearer ${process.env.CRON_SECRET}`;
   const isManualRequest = req.body?.secret === process.env.SYNC_SECRET;
@@ -27,7 +25,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     console.log('开始批量同步...');
 
-    // 获取所有待同步的笔记
     const pendingNotes = await getPendingNotes();
     console.log(`找到 ${pendingNotes.length} 条待同步笔记`);
 
@@ -45,6 +42,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       errors: [] as string[]
     };
 
+    const syncedNoteIds: string[] = [];
+    const fileOps: FileOperation[] = [];
+
     // 按文章分组
     const notesByArticle = new Map<string, NoteData[]>();
     for (const note of pendingNotes) {
@@ -58,67 +58,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       try {
         console.log(`处理文章: ${articleSlug}, 笔记数: ${notes.length}`);
 
-        // 查找文章
         const article = await findArticleBySlug(articleSlug);
         let articleContent = article.content;
 
-        // 处理每条笔记
         for (const note of notes) {
           try {
             if (note.action === 'create') {
-              // 创建笔记文件
               const noteMarkdown = generateNoteMarkdown(
-                note.id,
-                note.articleSlug,
-                note.selectedText,
-                note.noteContent
+                note.id, note.articleSlug, note.selectedText, note.noteContent
               );
-              const notePath = `content/notes/${note.articleSlug}/${note.id}.md`;
-              await createFile(notePath, noteMarkdown, `add note ${note.id}`);
-
-              // 在文章中插入 shortcode
+              fileOps.push({
+                path: `content/notes/${note.articleSlug}/${note.id}.md`,
+                content: noteMarkdown
+              });
               articleContent = insertShortcode(articleContent, note.selectedText, note.id);
 
               results.success++;
-              console.log(`笔记创建成功: ${note.id}`);
+              syncedNoteIds.push(note.id);
+              console.log(`笔记准备创建: ${note.id}`);
 
             } else if (note.action === 'update') {
-              // 更新笔记文件
               const noteMarkdown = generateNoteMarkdown(
-                note.id,
-                note.articleSlug,
-                note.selectedText,
-                note.noteContent
+                note.id, note.articleSlug, note.selectedText, note.noteContent
               );
-              const notePath = `content/notes/${note.articleSlug}/${note.id}.md`;
-
-              // 获取现有文件的 SHA
-              try {
-                const existingFile = await import('../lib/github').then(m => m.getFile(notePath));
-                await updateFile(notePath, noteMarkdown, `update note ${note.id}`, existingFile.sha);
-              } catch {
-                // 文件不存在，创建新文件
-                await createFile(notePath, noteMarkdown, `add note ${note.id}`);
-              }
+              fileOps.push({
+                path: `content/notes/${note.articleSlug}/${note.id}.md`,
+                content: noteMarkdown
+              });
 
               results.success++;
-              console.log(`笔记更新成功: ${note.id}`);
+              syncedNoteIds.push(note.id);
+              console.log(`笔记准备更新: ${note.id}`);
 
             } else if (note.action === 'delete') {
-              // 删除笔记文件
-              const notePath = `content/notes/${note.articleSlug}/${note.id}.md`;
-              try {
-                const existingFile = await import('../lib/github').then(m => m.getFile(notePath));
-                await deleteFile(notePath, `delete note ${note.id}`, existingFile.sha);
-              } catch {
-                console.log(`笔记文件不存在: ${notePath}`);
-              }
-
-              // 从文章中移除 shortcode
+              fileOps.push({
+                path: `content/notes/${note.articleSlug}/${note.id}.md`
+              });
               articleContent = removeShortcode(articleContent, note.selectedText, note.id);
 
               results.success++;
-              console.log(`笔记删除成功: ${note.id}`);
+              syncedNoteIds.push(note.id);
+              console.log(`笔记准备删除: ${note.id}`);
             }
           } catch (error: any) {
             results.failed++;
@@ -127,20 +107,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         }
 
-        // 更新文章内容
+        // 文章内容有变更则加入操作列表
         if (articleContent !== article.content) {
-          await updateFile(
-            article.path,
-            articleContent,
-            `sync notes for ${articleSlug}`,
-            article.sha
-          );
-          console.log(`文章已更新: ${article.path}`);
+          fileOps.push({ path: article.path, content: articleContent });
+          console.log(`文章准备更新: ${article.path}`);
         }
 
       } catch (error: any) {
         console.error(`文章处理失败 ${articleSlug}:`, error);
-        // 标记该文章的所有笔记为失败
         for (const note of notes) {
           if (!results.errors.find(e => e.startsWith(note.id))) {
             results.failed++;
@@ -150,9 +124,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // 清空已同步的笔记
+    // 一次性提交所有变更
+    if (fileOps.length > 0) {
+      await batchCommit(fileOps, `sync notes: ${syncedNoteIds.length} notes`);
+      console.log(`已提交 ${fileOps.length} 个文件变更`);
+    }
+
+    // 清空 Redis
     await clearPendingSync();
-    console.log('待同步集合已清空');
+    if (syncedNoteIds.length > 0) {
+      await removeNotesFromRedis(syncedNoteIds);
+      console.log(`已从 Redis 删除 ${syncedNoteIds.length} 条笔记`);
+    }
 
     console.log(`同步完成: 成功 ${results.success}, 失败 ${results.failed}`);
 

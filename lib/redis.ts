@@ -68,6 +68,24 @@ export async function clearPendingSync(): Promise<void> {
   await redis.del(PENDING_SYNC_SET);
 }
 
+// 根据文章 slug 获取所有笔记（用于页面加载时渲染未同步笔记）
+export async function getNotesByArticle(articleSlug: string): Promise<NoteData[]> {
+  const keys = await redis.keys('note:*');
+  if (keys.length === 0) return [];
+
+  const notes: NoteData[] = [];
+  for (const key of keys) {
+    const data = await redis.get(key);
+    if (data) {
+      const note: NoteData = typeof data === 'string' ? JSON.parse(data) : data as NoteData;
+      if (note.articleSlug === articleSlug && note.action !== 'delete') {
+        notes.push(note);
+      }
+    }
+  }
+  return notes;
+}
+
 // 删除已同步的笔记
 export async function removeNotesFromRedis(noteIds: string[]): Promise<void> {
   for (const noteId of noteIds) {

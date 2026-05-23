@@ -8,8 +8,12 @@
   ],
   "routes": [
     {
+      "src": "/api/sync",
+      "dest": "/api/sync.ts"
+    },
+    {
       "src": "/api/notes/(.*)",
-      "dest": "/api/notes/[id].ts"
+      "dest": "/api/notes/[id].ts?id=$1"
     },
     {
       "src": "/api/(.*)",

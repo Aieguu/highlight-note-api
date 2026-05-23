@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { saveNoteToRedis, type NoteData } from '../../lib/redis';
+import { saveNoteToRedis, getNotesByArticle, type NoteData } from '../../lib/redis';
 import { generateNoteId, setCorsHeaders } from '../../lib/utils';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -9,18 +9,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).end();
   }
 
-  // GET - 返回 API 信息
+  // GET - 按文章获取笔记 或 返回 API 信息
   if (req.method === 'GET') {
+    const { articleSlug } = req.query;
+
+    if (articleSlug && typeof articleSlug === 'string') {
+      try {
+        const notes = await getNotesByArticle(articleSlug);
+        return res.status(200).json({ success: true, notes });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    }
+
     return res.status(200).json({
       success: true,
       message: 'Highlight Note API',
-      endpoints: {
-        POST: '/api/notes - 创建笔记',
-        GET: '/api/notes/:id - 获取笔记',
-        PUT: '/api/notes/:id - 更新笔记',
-        DELETE: '/api/notes/:id - 删除笔记',
-        POST: '/api/sync - 批量同步笔记'
-      }
+      endpoints: [
+        'POST /api/notes - 创建笔记',
+        'GET /api/notes?articleSlug=xxx - 获取文章的未同步笔记',
+        'GET /api/notes/:id - 获取笔记',
+        'PUT /api/notes/:id - 更新笔记',
+        'DELETE /api/notes/:id - 删除笔记',
+        'POST /api/sync - 批量同步笔记'
+      ]
     });
   }
 
