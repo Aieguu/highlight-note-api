@@ -8,8 +8,16 @@
   ],
   "routes": [
     {
+      "src": "/api/notes/(.*)",
+      "dest": "/api/notes/[id].ts"
+    },
+    {
       "src": "/api/(.*)",
       "dest": "/api/$1"
+    },
+    {
+      "src": "/",
+      "dest": "/api/index.ts"
     }
   ]
 }
