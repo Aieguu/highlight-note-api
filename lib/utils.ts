@@ -9,32 +9,43 @@ export function generateNoteMarkdown(
   noteContent: string
 ): string {
   const date = new Date().toISOString().split('T')[0];
+  const escapedSelectedText = selectedText.replace(/"/g, '\\"');
   return `---
 title: "笔记"
 date: ${date}
 type: note
 hidden: true
 article: "${articleSlug}"
-selected_text: "${selectedText}"
+selected_text: "${escapedSelectedText}"
 note_id: "${noteId}"
 ---
 
 ${noteContent}`;
 }
 
+export function escapeQuotes(text: string): string {
+  return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+export function unescapeQuotes(text: string): string {
+  return text.replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+}
+
 export function insertShortcode(article: string, selectedText: string, noteId: string): string {
   const index = article.indexOf(selectedText);
   if (index === -1) {
-    throw new Error('未找到选中的文字');
+    throw new Error(`未找到选中的文字: "${selectedText.substring(0, 50)}..."`);
   }
 
+  const escapedText = escapeQuotes(selectedText);
   const before = article.substring(0, index);
   const after = article.substring(index + selectedText.length);
-  return `${before}{{< hl "${selectedText}" "${noteId}" >}}${after}`;
+  return `${before}{{< hl "${escapedText}" "${noteId}" >}}${after}`;
 }
 
 export function removeShortcode(article: string, selectedText: string, noteId: string): string {
-  const shortcodePattern = `{{< hl "${selectedText}" "${noteId}" >}}`;
+  const escapedText = escapeQuotes(selectedText);
+  const shortcodePattern = `{{< hl "${escapedText}" "${noteId}" >}}`;
   return article.replace(shortcodePattern, selectedText);
 }
 
@@ -47,8 +58,8 @@ export function parseNoteContent(markdown: string): { selectedText: string; note
   const frontmatter = frontmatterMatch[1];
   const content = frontmatterMatch[2].trim();
 
-  const selectedTextMatch = frontmatter.match(/selected_text:\s*"(.+)"/);
-  const selectedText = selectedTextMatch ? selectedTextMatch[1] : '';
+  const selectedTextMatch = frontmatter.match(/selected_text:\s*"((?:[^"\\]|\\.)*)"/);
+  const selectedText = selectedTextMatch ? selectedTextMatch[1].replace(/\\"/g, '"') : '';
 
   return {
     selectedText,
