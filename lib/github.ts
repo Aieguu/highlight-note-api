@@ -25,7 +25,7 @@ export async function getFile(path: string): Promise<GitHubFile> {
 
   const data = await response.json();
   return {
-    content: atob(data.content),
+    content: decodeURIComponent(escape(atob(data.content))),
     sha: data.sha
   };
 }
