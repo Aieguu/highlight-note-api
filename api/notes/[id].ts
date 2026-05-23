@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getFile, updateFile, deleteFile } from '../../lib/github';
-import { generateNoteMarkdown, removeShortcode, parseNoteContent, setCorsHeaders } from '../../lib/utils';
+import { getNoteFromRedis, saveNoteToRedis, deleteNoteFromRedis, type NoteData } from '../../lib/redis';
+import { setCorsHeaders } from '../../lib/utils';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCorsHeaders(res);
@@ -18,22 +18,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     // GET - 获取笔记
     if (req.method === 'GET') {
-      const { articleSlug } = req.query;
-      if (!articleSlug || typeof articleSlug !== 'string') {
-        return res.status(400).json({ success: false, error: '缺少文章标识' });
-      }
+      const note = await getNoteFromRedis(id);
 
-      const notePath = `content/notes/${articleSlug}/${id}.md`;
-      const noteFile = await getFile(notePath);
-      const noteData = parseNoteContent(noteFile.content);
+      if (!note) {
+        return res.status(404).json({ success: false, error: '笔记不存在' });
+      }
 
       return res.status(200).json({
         success: true,
-        note: {
-          id,
-          articleSlug,
-          ...noteData
-        }
+        note
       });
     }
 
@@ -45,28 +38,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(400).json({ success: false, error: '缺少必要参数' });
       }
 
-      const notePath = `content/notes/${articleSlug}/${id}.md`;
-      const noteFile = await getFile(notePath);
-      const existingNote = parseNoteContent(noteFile.content);
+      // 获取现有笔记
+      const existingNote = await getNoteFromRedis(id);
 
-      const updatedMarkdown = generateNoteMarkdown(
+      const note: NoteData = {
         id,
         articleSlug,
-        existingNote.selectedText,
-        noteContent
-      );
+        selectedText: existingNote?.selectedText || '',
+        noteContent,
+        timestamp: Date.now(),
+        action: existingNote?.action === 'create' ? 'create' : 'update'
+      };
 
-      await updateFile(
-        notePath,
-        updatedMarkdown,
-        `update note ${id}`,
-        noteFile.sha
-      );
+      // 更新 Redis
+      await saveNoteToRedis(note);
+
+      console.log('笔记已更新:', id);
 
       return res.status(200).json({
         success: true,
         noteId: id,
-        status: 'synced'
+        status: 'pending',
+        message: '笔记已更新，等待同步'
       });
     }
 
@@ -78,28 +71,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(400).json({ success: false, error: '缺少文章标识' });
       }
 
-      // 1. 获取笔记文件
-      const notePath = `content/notes/${articleSlug}/${id}.md`;
-      const noteFile = await getFile(notePath);
-      const noteData = parseNoteContent(noteFile.content);
+      // 获取现有笔记
+      const existingNote = await getNoteFromRedis(id);
 
-      // 2. 删除笔记文件
-      await deleteFile(
-        notePath,
-        `delete note ${id}`,
-        noteFile.sha
-      );
-
-      // 3. 从原文章中移除 shortcode
-      const articlePath = `content/posts/${articleSlug}.md`;
-      const article = await getFile(articlePath);
-      const newContent = removeShortcode(article.content, noteData.selectedText, id);
-      await updateFile(
-        articlePath,
-        newContent,
-        `remove highlight note ${id}`,
-        article.sha
-      );
+      if (existingNote && existingNote.action === 'create') {
+        // 如果是新建的笔记还未同步，直接删除
+        await deleteNoteFromRedis(id);
+        console.log('笔记已从 Redis 删除:', id);
+      } else {
+        // 如果是已同步的笔记，标记为删除，等待同步
+        const note: NoteData = {
+          id,
+          articleSlug,
+          selectedText: existingNote?.selectedText || '',
+          noteContent: '',
+          timestamp: Date.now(),
+          action: 'delete'
+        };
+        await saveNoteToRedis(note);
+        console.log('笔记已标记为删除:', id);
+      }
 
       return res.status(200).json({
         success: true,

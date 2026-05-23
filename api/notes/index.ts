@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createFile, updateFile, getFile } from '../../lib/github';
-import { generateNoteId, generateNoteMarkdown, insertShortcode, setCorsHeaders } from '../../lib/utils';
+import { saveNoteToRedis, type NoteData } from '../../lib/redis';
+import { generateNoteId, setCorsHeaders } from '../../lib/utils';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCorsHeaders(res);
@@ -9,6 +9,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).end();
   }
 
+  // GET - 返回 API 信息
+  if (req.method === 'GET') {
+    return res.status(200).json({
+      success: true,
+      message: 'Highlight Note API',
+      endpoints: {
+        POST: '/api/notes - 创建笔记',
+        GET: '/api/notes/:id - 获取笔记',
+        PUT: '/api/notes/:id - 更新笔记',
+        DELETE: '/api/notes/:id - 删除笔记',
+        POST: '/api/sync - 批量同步笔记'
+      }
+    });
+  }
+
+  // POST - 创建笔记
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, error: 'Method not allowed' });
   }
@@ -22,29 +38,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const noteId = generateNoteId();
 
-    // 1. 创建笔记文件
-    const noteMarkdown = generateNoteMarkdown(noteId, articleSlug, selectedText, noteContent);
-    await createFile(
-      `content/notes/${articleSlug}/${noteId}.md`,
-      noteMarkdown,
-      `add note ${noteId} to ${articleSlug}`
-    );
+    const note: NoteData = {
+      id: noteId,
+      articleSlug,
+      selectedText,
+      noteContent,
+      timestamp: Date.now(),
+      action: 'create'
+    };
 
-    // 2. 修改原文章（插入 shortcode）
-    const articlePath = `content/posts/${articleSlug}.md`;
-    const article = await getFile(articlePath);
-    const newContent = insertShortcode(article.content, selectedText, noteId);
-    await updateFile(
-      articlePath,
-      newContent,
-      `add highlight note ${noteId}`,
-      article.sha
-    );
+    // 保存到 Redis
+    await saveNoteToRedis(note);
+
+    console.log('笔记已保存到 Redis:', noteId);
 
     return res.status(200).json({
       success: true,
       noteId,
-      status: 'synced'
+      status: 'pending',
+      message: '笔记已保存，等待同步'
     });
 
   } catch (error: any) {
