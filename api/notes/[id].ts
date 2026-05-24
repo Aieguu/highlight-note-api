@@ -16,7 +16,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // GET - 获取笔记
+    // GET - 获取笔记（仅未同步笔记，已同步笔记由 Hugo 直接渲染）
     if (req.method === 'GET') {
       const note = await getNoteFromRedis(id);
 
@@ -24,10 +24,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(404).json({ success: false, error: '笔记不存在' });
       }
 
-      return res.status(200).json({
-        success: true,
-        note
-      });
+      return res.status(200).json({ success: true, note });
     }
 
     // PUT - 更新笔记
