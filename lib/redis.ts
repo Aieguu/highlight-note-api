@@ -1,4 +1,5 @@
 import { Redis } from '@upstash/redis';
+import { normalizeArticleId, type NoteRecord } from './utils';
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL || '',
@@ -7,88 +8,82 @@ const redis = new Redis({
 
 export default redis;
 
-// 笔记数据结构
-export interface NoteData {
-  id: string;
-  articleSlug: string;
-  selectedText: string;
-  noteContent: string;
-  timestamp: number;
-  action: 'create' | 'update' | 'delete';
+const NOTE_PREFIX = 'highlight-note:note:';
+const ARTICLE_PREFIX = 'highlight-note:article:';
+const PENDING_SYNC_SET = 'highlight-note:pending-sync';
+const SYNC_LOCK = 'highlight-note:sync-lock';
+
+function noteKey(noteId: string): string {
+  return `${NOTE_PREFIX}${noteId}`;
 }
 
-// Redis key 前缀
-const NOTE_PREFIX = 'note:';
-const PENDING_SYNC_SET = 'pending_sync';
+function articleKey(articleId: string): string {
+  return `${ARTICLE_PREFIX}${normalizeArticleId(articleId)}`;
+}
 
-// 保存笔记到 Redis
-export async function saveNoteToRedis(note: NoteData): Promise<void> {
-  const key = `${NOTE_PREFIX}${note.id}`;
-  await redis.set(key, JSON.stringify(note));
+export async function saveNoteToRedis(note: NoteRecord): Promise<void> {
+  await redis.set(noteKey(note.id), note);
   await redis.sadd(PENDING_SYNC_SET, note.id);
+  await redis.sadd(articleKey(note.articleId), note.id);
 }
 
-// 从 Redis 获取笔记
-export async function getNoteFromRedis(noteId: string): Promise<NoteData | null> {
-  const key = `${NOTE_PREFIX}${noteId}`;
-  const data = await redis.get(key);
+export async function getNoteFromRedis(noteId: string): Promise<NoteRecord | null> {
+  const data = await redis.get<NoteRecord | string>(noteKey(noteId));
   if (!data) return null;
-  return typeof data === 'string' ? JSON.parse(data) : data as NoteData;
+  return typeof data === 'string' ? JSON.parse(data) : data;
 }
 
-// 从 Redis 删除笔记
 export async function deleteNoteFromRedis(noteId: string): Promise<void> {
-  const key = `${NOTE_PREFIX}${noteId}`;
-  await redis.del(key);
+  const note = await getNoteFromRedis(noteId);
+  await redis.del(noteKey(noteId));
   await redis.srem(PENDING_SYNC_SET, noteId);
+  if (note) {
+    await redis.srem(articleKey(note.articleId), noteId);
+  }
 }
 
-// 获取所有待同步的笔记 ID
 export async function getPendingNoteIds(): Promise<string[]> {
-  return await redis.smembers(PENDING_SYNC_SET);
+  return redis.smembers(PENDING_SYNC_SET);
 }
 
-// 获取所有待同步的笔记
-export async function getPendingNotes(): Promise<NoteData[]> {
+export async function getPendingNotes(): Promise<NoteRecord[]> {
   const noteIds = await getPendingNoteIds();
-  if (noteIds.length === 0) return [];
+  const notes: NoteRecord[] = [];
 
-  const notes: NoteData[] = [];
   for (const noteId of noteIds) {
     const note = await getNoteFromRedis(noteId);
-    if (note) {
-      notes.push(note);
-    }
+    if (note) notes.push(note);
   }
-  return notes;
+
+  return notes.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
 }
 
-// 清空待同步集合（同步完成后调用）
-export async function clearPendingSync(): Promise<void> {
-  await redis.del(PENDING_SYNC_SET);
-}
-
-// 根据文章 slug 获取所有笔记（用于页面加载时渲染未同步笔记）
-export async function getNotesByArticle(articleSlug: string): Promise<NoteData[]> {
-  const keys = await redis.keys('note:*');
-  if (keys.length === 0) return [];
-
-  const notes: NoteData[] = [];
-  for (const key of keys) {
-    const data = await redis.get(key);
-    if (data) {
-      const note: NoteData = typeof data === 'string' ? JSON.parse(data) : data as NoteData;
-      if (note.articleSlug === articleSlug && note.action !== 'delete') {
-        notes.push(note);
-      }
-    }
-  }
-  return notes;
-}
-
-// 删除已同步的笔记
-export async function removeNotesFromRedis(noteIds: string[]): Promise<void> {
+export async function confirmSyncedNotes(noteIds: string[]): Promise<void> {
   for (const noteId of noteIds) {
     await deleteNoteFromRedis(noteId);
   }
+}
+
+export async function getNotesByArticle(articleId: string): Promise<NoteRecord[]> {
+  const noteIds = await redis.smembers(articleKey(articleId));
+  const notes: NoteRecord[] = [];
+
+  for (const noteId of noteIds) {
+    const note = await getNoteFromRedis(noteId);
+    if (note && note.action !== 'delete') {
+      notes.push(note);
+    }
+  }
+
+  return notes.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+}
+
+export async function acquireSyncLock(ttlSeconds = 300): Promise<boolean> {
+  const value = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const result = await redis.set(SYNC_LOCK, value, { nx: true, ex: ttlSeconds });
+  return result === 'OK';
+}
+
+export async function releaseSyncLock(): Promise<void> {
+  await redis.del(SYNC_LOCK);
 }

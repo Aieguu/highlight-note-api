@@ -4,15 +4,27 @@
 
 ## 简介
 
-为 Ji 主题提供划线笔记功能的后端 API，支持在文章中选中文字添加笔记，笔记先缓存到 Redis，每天凌晨4点批量同步到 GitHub，触发 Hugo 重新构建。
+为 Ji 主题提供划线笔记功能的后端 API。前端只负责交互和展示，所有写入都通过带鉴权的 API 进入 Redis 待同步队列，再由定时任务批量写回 GitHub，触发 Hugo 重新构建。
+
+## 前端功能
+
+配合 Ji 主题使用时，提供以下交互功能：
+
+- **划词添加** - 选中文字后出现"添加笔记"按钮
+- **卡片式弹窗** - 笔记查看、编辑采用统一的卡片式设计
+- **内联编辑** - 点击修改图标进入编辑模式，确认后保存
+- **状态标识** - 标题颜色区分同步状态（橙色=待同步，绿色=已同步）
+- **设置入口** - 首页用户卡片右上角齿轮图标，点击设置写入令牌
 
 ## 功能特性
 
 - **创建笔记** - 选中文字后添加笔记
-- **编辑笔记** - 修改已有笔记内容
-- **删除笔记** - 删除笔记并移除划线标记
-- **批量同步** - 每天凌晨4点自动同步到 GitHub
-- **安全存储** - Token 存储在环境变量中，不暴露给前端
+- **编辑笔记** - 支持未同步和已同步笔记
+- **删除笔记** - 支持未同步直接删除、已同步标记后批量删除
+- **批量同步** - 默认每天凌晨4点（北京时间）自动同步到 GitHub
+- **写入鉴权** - 创建、编辑、删除、读取待同步笔记均需要 `WRITE_TOKEN`
+- **来源限制** - 可通过 `ALLOWED_ORIGINS` 限制允许调用的博客域名
+- **安全存储** - GitHub、Redis、同步密钥只存在服务端环境变量
 
 ## API 接口
 
@@ -22,7 +34,7 @@
 | GET | `/api/notes/:id` | 获取笔记 |
 | PUT | `/api/notes/:id` | 更新笔记 |
 | DELETE | `/api/notes/:id` | 删除笔记 |
-| POST | `/api/sync` | 手动触发同步 |
+| GET/POST | `/api/sync` | Vercel Cron 或手动触发同步 |
 
 ## 前置要求
 
@@ -97,6 +109,11 @@ git push -u origin main
 | `GITHUB_BRANCH` | 分支名称 | `docs` |
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis URL | `https://xxx.upstash.io` |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis Token | `xxxxxxxxxxxxxxxx` |
+| `WRITE_TOKEN` | 前端写入令牌，建议使用长随机值 | `openssl rand -hex 32` |
+| `ALLOWED_ORIGINS` | 允许调用 API 的站点来源，逗号分隔 | `https://blog.example.com,http://localhost:1313` |
+| `CONTENT_SECTIONS` | 可查找的文章 section，逗号分隔 | `posts` |
+| `NOTES_ROOT` | 笔记落盘目录 | `content/notes` |
+| `CRON_SECRET` | Vercel Cron 请求密钥 | `your-cron-secret` |
 | `SYNC_SECRET` | 同步密钥（可选，手动调用用） | `your-secret-key` |
 
 #### 4. 完成部署
@@ -133,32 +150,48 @@ git push -u origin main
 在你的博客 `hugo.toml` 中添加：
 
 ```toml
-[params]
-  highlightNote = true
-  highlightNoteApi = "https://your-project.vercel.app"
+[params.plugins.highlightNote]
+  enabled = true
+  apiBase = "https://your-project.vercel.app"
+  writeTokenStorageKey = "ji.highlightNote.writeToken"
+  maxSelectionLength = 2000
 ```
 
 将 `https://your-project.vercel.app` 替换为你的 Vercel 部署地址。
 
+### 写入令牌设置
+
+插件启用后，首页用户信息卡片右上角会显示齿轮图标，点击可打开令牌设置对话框。
+
+也可在浏览器控制台手动设置：
+
+```js
+window.HighlightNote.setWriteToken("你的 WRITE_TOKEN")
+```
+
+令牌保存在浏览器 localStorage 中，无需重复设置。没有写入令牌的访客只能查看已同步的笔记，不能新增、编辑或删除。
+
 ## 同步机制
 
 ```
-用户添加笔记 → 存入 Redis → 立即在页面显示
+用户添加笔记 → Bearer WRITE_TOKEN 鉴权 → 存入 Redis → 立即在页面显示
                     ↓
             每天凌晨4点（北京时间）
                     ↓
          Vercel Cron 触发同步任务
                     ↓
-         批量读取 Redis 中的笔记
+         加同步锁并批量读取 Redis 中的待同步笔记
                     ↓
          推送到 GitHub（创建/更新/删除文件）
+                    ↓
+         仅确认成功项并从 Redis 移除
                     ↓
          Hugo Actions 触发重新构建
                     ↓
            笔记固化到站点
 ```
 
-**优势**：每天只触发一次 Hugo 构建，避免频繁部署。
+**优势**：每天只触发一次 Hugo 构建，避免频繁部署；失败项会保留在 Redis 中，下一次继续同步。
 
 ## 手动同步
 
@@ -174,11 +207,12 @@ curl -X POST https://your-project.vercel.app/api/sync \
 
 ### 文件名与 URL 匹配
 
-插件通过 URL 中的 slug 查找对应的文章文件。请确保文章文件名与 Hugo 生成的 URL slug 一致。
+插件优先使用主题在文章容器上输出的 `data-highlight-article-path` 精确定位文章文件；缺失时才根据 `articleId` 和 `CONTENT_SECTIONS` 查找。
 
-**匹配规则：**
-- 文件名转小写
-- 空格替换为连字符 `-`
+**建议：**
+- 使用 Ji 主题新版 `single.html` 输出 `data-highlight-article-path`
+- 保持 `CONTENT_SECTIONS` 与 Hugo 内容目录一致
+- 避免手动修改已插入 shortcode 的 `note_id`
 
 **示例：**
 

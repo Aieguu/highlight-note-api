@@ -5,7 +5,8 @@
   "description": "Backend API for Hugo highlight note feature",
   "scripts": {
     "dev": "vercel dev",
-    "deploy": "vercel --prod"
+    "deploy": "vercel --prod",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@upstash/redis": "^1.38.0",

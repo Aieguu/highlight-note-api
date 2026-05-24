@@ -1,108 +1,115 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getNoteFromRedis, saveNoteToRedis, deleteNoteFromRedis, type NoteData } from '../../lib/redis';
-import { setCorsHeaders } from '../../lib/utils';
+import { deleteNoteFromRedis, getNoteFromRedis, saveNoteToRedis } from '../../lib/redis';
+import { getCanonicalNote } from '../../lib/github';
+import {
+  createNoteRecord,
+  parseError,
+  requireWriteAuth,
+  setCorsHeaders,
+  type NoteRecord
+} from '../../lib/utils';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  setCorsHeaders(res);
+  setCorsHeaders(req, res);
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  const { id } = req.query;
-
-  if (!id || typeof id !== 'string') {
-    return res.status(400).json({ success: false, error: '缺少笔记 ID' });
-  }
-
   try {
-    // GET - 获取笔记（仅未同步笔记，已同步笔记由 Hugo 直接渲染）
+    requireWriteAuth(req);
+
+    const { id } = req.query;
+    if (!id || typeof id !== 'string') {
+      return res.status(400).json({ success: false, error: '缺少笔记 ID' });
+    }
+
     if (req.method === 'GET') {
-      const note = await getNoteFromRedis(id);
-
-      if (!note) {
-        return res.status(404).json({ success: false, error: '笔记不存在' });
-      }
-
+      const note = await resolveNote(id, req);
+      if (!note) return res.status(404).json({ success: false, error: '笔记不存在' });
       return res.status(200).json({ success: true, note });
     }
 
-    // PUT - 更新笔记
     if (req.method === 'PUT') {
-      const { articleSlug, noteContent } = req.body;
-
-      if (!articleSlug || !noteContent) {
+      const { articleId, articleSlug, articlePath, section, pageUrl, selectedText, noteContent } = req.body || {};
+      if (!(articleId || articleSlug) || !noteContent) {
         return res.status(400).json({ success: false, error: '缺少必要参数' });
       }
 
-      // 获取现有笔记
-      const existingNote = await getNoteFromRedis(id);
-
-      const note: NoteData = {
+      const existingNote = await resolveNote(id, req);
+      const note = createNoteRecord({
         id,
-        articleSlug,
-        selectedText: existingNote?.selectedText || '',
+        articleId: existingNote?.articleId || articleId || articleSlug,
+        articlePath: existingNote?.articlePath || articlePath,
+        section: existingNote?.section || section,
+        pageUrl: existingNote?.pageUrl || pageUrl,
+        selectedText: existingNote?.selectedText || selectedText,
         noteContent,
-        timestamp: Date.now(),
-        action: existingNote?.action === 'create' ? 'create' : 'update'
-      };
+        selector: existingNote?.selector || { exact: selectedText || existingNote?.selectedText || '' },
+        action: existingNote?.action === 'create' ? 'create' : 'update',
+        createdAt: existingNote?.createdAt,
+        status: 'pending'
+      });
 
-      // 更新 Redis
       await saveNoteToRedis(note);
-
-      console.log('笔记已更新:', id);
 
       return res.status(200).json({
         success: true,
         noteId: id,
+        note,
         status: 'pending',
         message: '笔记已更新，等待同步'
       });
     }
 
-    // DELETE - 删除笔记
     if (req.method === 'DELETE') {
-      const { articleSlug } = req.body;
-
-      if (!articleSlug) {
+      const { articleId, articleSlug, articlePath, section, pageUrl, selectedText } = req.body || {};
+      if (!(articleId || articleSlug)) {
         return res.status(400).json({ success: false, error: '缺少文章标识' });
       }
 
-      // 获取现有笔记
-      const existingNote = await getNoteFromRedis(id);
-
-      if (existingNote && existingNote.action === 'create') {
-        // 如果是新建的笔记还未同步，直接删除
+      const existingNote = await resolveNote(id, req);
+      if (existingNote?.action === 'create') {
         await deleteNoteFromRedis(id);
-        console.log('笔记已从 Redis 删除:', id);
-      } else {
-        // 如果是已同步的笔记，标记为删除，等待同步
-        const note: NoteData = {
-          id,
-          articleSlug,
-          selectedText: existingNote?.selectedText || '',
-          noteContent: '',
-          timestamp: Date.now(),
-          action: 'delete'
-        };
-        await saveNoteToRedis(note);
-        console.log('笔记已标记为删除:', id);
+        return res.status(200).json({ success: true, noteId: id, message: '笔记已删除' });
       }
+
+      const note = createNoteRecord({
+        id,
+        articleId: existingNote?.articleId || articleId || articleSlug,
+        articlePath: existingNote?.articlePath || articlePath,
+        section: existingNote?.section || section,
+        pageUrl: existingNote?.pageUrl || pageUrl,
+        selectedText: existingNote?.selectedText || selectedText,
+        noteContent: existingNote?.noteContent || '',
+        selector: existingNote?.selector || { exact: selectedText || existingNote?.selectedText || '' },
+        action: 'delete',
+        createdAt: existingNote?.createdAt,
+        status: 'pending'
+      });
+
+      await saveNoteToRedis(note);
 
       return res.status(200).json({
         success: true,
         noteId: id,
-        message: '笔记已删除'
+        note,
+        message: '笔记已删除，等待同步'
       });
     }
 
     return res.status(405).json({ success: false, error: 'Method not allowed' });
-
-  } catch (error: any) {
-    console.error('操作失败:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
+  } catch (error) {
+    const parsed = parseError(error);
+    return res.status(parsed.status).json({ success: false, error: parsed.error });
   }
+}
+
+async function resolveNote(id: string, req: VercelRequest): Promise<NoteRecord | null> {
+  const pending = await getNoteFromRedis(id);
+  if (pending) return pending;
+
+  const articleId = String(req.query.articleId || req.query.articleSlug || req.body?.articleId || req.body?.articleSlug || '');
+  const articlePath = String(req.query.articlePath || req.body?.articlePath || '');
+  return getCanonicalNote(id, { articleId, articlePath });
 }
