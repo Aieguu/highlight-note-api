@@ -220,7 +220,6 @@ curl -X POST https://your-project.vercel.app/api/sync \
 |--------|----------|----------|
 | `RAG 检索优化.md` | `rag-检索优化` | ✅ |
 | `Docker 笔记.md` | `docker-笔记` | ✅ |
-| `Spring AI 笔记一.md` | `spring-ai-笔记一` | ✅ |
 | `MyPost.md` | `mypost` | ✅ |
 
 ### 分支配置
